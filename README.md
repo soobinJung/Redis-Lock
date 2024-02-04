@@ -11,9 +11,100 @@ Lettuce는 비동기 이벤트 기반의 Redis 클라이언트로, Netty를 기�
 - 락 타임아웃: 락이 자동으로 해제되도록 타임아웃을 설정할 수 있습니다. 이는 데드락을 방지하는 데 도움이 됩니다.
 - 락 갱신: 락의 유지 시간을 연장할 수 있는 기능입니다.
 
+```
+@Component
+public class RedisLockRepository {
+
+    private RedisTemplate<String, String> redisTemplate;
+
+    public RedisLockRepository(RedisTemplate<String, String> redisTemplate) {
+        this.redisTemplate = redisTemplate;
+    }
+
+    public Boolean lock(Long key){
+        return redisTemplate
+                .opsForValue()
+                .setIfAbsent(generateKey(key), "lock");
+    }
+
+    public void unlock(Long key){
+        redisTemplate.delete(generateKey(key));
+    }
+
+    public String generateKey(Long key){
+        return key.toString();
+    }
+}
+```
+
+```
+@Component
+public class LettuceLockStockFacade {
+
+    private RedisLockRepository redisLockRepository;
+    private StockService stockService;
+
+    public LettuceLockStockFacade(RedisLockRepository redisLockRepository, StockService stockService) {
+        this.redisLockRepository = redisLockRepository;
+        this.stockService = stockService;
+    }
+
+    public void decrease(Long id, Long quantity) throws InterruptedException {
+
+        /** Lock 획득 시도 **/
+        while (!redisLockRepository.lock(id)){
+            Thread.sleep(100);
+        }
+
+        try {
+            /** Lock 획득 상태에서 로직 수행 **/
+            stockService.decrease(id, quantity);
+        } finally {
+
+            /** Lock 해제 **/
+            redisLockRepository.unlock(id);
+        }
+    }
+}
+```
+
 #### Redisson Lock
 Redisson은 Redis를 위한 또 다른 Java 클라이언트이며, 높은 수준의 추상화를 제공합니다. 이는 객체 매핑, 분산 데이터 구조, 분산 서비스 및 유틸리티를 포함한 광범위한 기능을 제공합니다. Redisson Lock은 Redisson의 분산 락 구현체로, 더 복잡한 분산 시스템에서도 사용할 수 있도록 설계되었습니다. Redisson은 Redlock 알고리즘을 구현하여 분산 락을 제공하며, 다음과 같은 특징을 가집니다:
 
 - 자동 락 갱신: Redisson은 설정된 락 유지 시간이 만료되기 전에 자동으로 락을 갱신할 수 있는 기능을 제공합니다. 이는 락을 유지하는 작업이 오래 걸리는 경우 유용합니다.
 - 블로킹 및 논블로킹 락: Redisson은 블로킹 락과 논블로킹 락 모두를 지원하여, 락을 획득할 때까지 기다리거나 즉시 반환할 수 있습니다.
 - 공정성 보장: Redisson의 공정성 보장 락(Fair Lock)은 락을 요청하는 순서대로 획득할 수 있도록 합니다.
+
+```
+@Component
+public class RedissonLockStockFacade {
+
+    private RedissonClient redissonClient;
+    private StockService stockService;
+
+    public RedissonLockStockFacade(RedissonClient redissonClient, StockService stockService) {
+        this.redissonClient = redissonClient;
+        this.stockService = stockService;
+    }
+
+    public void decrease(Long id, Long quantity) {
+        RLock lock = redissonClient.getLock(id.toString());
+        try {
+            boolean available = lock.tryLock(10, 1, TimeUnit.SECONDS);
+
+            if (!available) {
+                System.out.println("Lock 획득 실패");
+                return;
+            }
+
+             stockService.decrease(id, quantity);
+
+        } catch (InterruptedException e) {
+            e.printStackTrace();
+        } finally {
+            lock.unlock();
+        }
+    }
+}
+```
+  
